@@ -28,9 +28,9 @@ class SensorUpdator:
             self.balance_notify = None
 
 
-    def update_one_userid(self, user_id: str, balance: float, last_daily_date: str, last_daily_usage: float, yearly_charge: float, yearly_usage: float, month_charge: float, month_usage: float, tou_data: dict = None, enhanced_balance: dict = None, notify=True):
+    def update_one_userid(self, user_id: str, balance: float, last_daily_date: str, last_daily_usage: float, yearly_charge: float, yearly_usage: float, month_charge: float, month_usage: float, tou_data: dict = None, enhanced_balance: dict = None, bill_tou_data: dict = None, notify=True):
         logging.info(f"[{user_id}] 开始更新 Home Assistant 传感器数据...")
-        self._save_to_cache(user_id, balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage, tou_data, enhanced_balance)
+        self._save_to_cache(user_id, balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage, tou_data, enhanced_balance, bill_tou_data)
         postfix = f"_{user_id[-4:]}"
         if balance is not None:
             if notify and self.balance_notify is not None:
@@ -47,9 +47,8 @@ class SensorUpdator:
         if month_charge is not None:
             self.update_month_data(postfix, month_charge)
 
-        # 分时电量传感器
-        if tou_data:
-            self._update_tou_sensors(postfix, tou_data)
+        # 分时电量传感器（优先用账单数据，更准确）
+        self._update_tou_sensors(postfix, tou_data, bill_tou_data)
 
         # 应交金额传感器
         if enhanced_balance and enhanced_balance.get("amount_due") is not None:
@@ -61,7 +60,7 @@ class SensorUpdator:
         from const import get_data_dir
         return os.path.join(get_data_dir(), 'sgcc_cache.json')
 
-    def _save_to_cache(self, user_id, balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage, tou_data=None, enhanced_balance=None):
+    def _save_to_cache(self, user_id, balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage, tou_data=None, enhanced_balance=None, bill_tou_data=None):
         cache_file = self._get_cache_file()
         abs_cache_file = os.path.abspath(cache_file)
         data = {}
@@ -87,6 +86,8 @@ class SensorUpdator:
             cache_entry["tou_data"] = tou_data
         if enhanced_balance:
             cache_entry["enhanced_balance"] = enhanced_balance
+        if bill_tou_data:
+            cache_entry["bill_tou_data"] = bill_tou_data
 
         data[user_id] = cache_entry
 
@@ -285,8 +286,12 @@ class SensorUpdator:
         self.send_url(sensorName, request_body)
         logging.info(f"Home Assistant 传感器 {sensorName} 状态已更新: {sensorState} {'kWh' if usage else 'CNY'}")
 
-    def _update_tou_sensors(self, postfix: str, tou_data: dict):
-        """更新月度分时电量传感器（谷/平/峰/尖）"""
+    def _update_tou_sensors(self, postfix: str, tou_data: dict = None, bill_tou_data: dict = None):
+        """更新月度分时电量传感器（谷/平/峰/尖）。
+
+        优先使用账单数据（bill_tou_data），更准确；
+        兜底从每日数据汇总当月值。
+        """
         current_date = datetime.now()
         first_day = current_date.replace(day=1)
         last_day_prev = first_day - timedelta(days=1)
@@ -299,27 +304,33 @@ class SensorUpdator:
             ("tip_usage", MONTH_TIP_SENSOR_NAME, "尖"),
         ]
 
-        # 尝试从 daily 数据汇总当月分时电量
-        daily_rows = tou_data.get("daily", [])
-        if not daily_rows:
+        # 优先：账单分时数据
+        if bill_tou_data:
+            tou_values = {
+                "valley_usage": bill_tou_data.get("valley_usage"),
+                "flat_usage": bill_tou_data.get("flat_usage"),
+                "peak_usage": bill_tou_data.get("peak_usage"),
+                "tip_usage": bill_tou_data.get("tip_usage"),
+            }
+        elif tou_data:
+            # 兜底：从 daily 数据汇总当月分时
+            daily_rows = tou_data.get("daily", [])
+            if daily_rows:
+                current_month_prefix = current_date.strftime("%Y-%m")
+                tou_values = {
+                    "valley_usage": sum(r.get("valley_usage", 0) or 0 for r in daily_rows if str(r.get("date", "")[:7]) == current_month_prefix),
+                    "flat_usage": sum(r.get("flat_usage", 0) or 0 for r in daily_rows if str(r.get("date", "")[:7]) == current_month_prefix),
+                    "peak_usage": sum(r.get("peak_usage", 0) or 0 for r in daily_rows if str(r.get("date", "")[:7]) == current_month_prefix),
+                    "tip_usage": sum(r.get("tip_usage", 0) or 0 for r in daily_rows if str(r.get("date", "")[:7]) == current_month_prefix),
+                }
+            else:
+                return
+        else:
             return
-
-        current_month_prefix = current_date.strftime("%Y-%m")
-        month_valley = sum(r.get("valley_usage", 0) or 0 for r in daily_rows if str(r.get("date", "")[:7]) == current_month_prefix)
-        month_flat = sum(r.get("flat_usage", 0) or 0 for r in daily_rows if str(r.get("date", "")[:7]) == current_month_prefix)
-        month_peak = sum(r.get("peak_usage", 0) or 0 for r in daily_rows if str(r.get("date", "")[:7]) == current_month_prefix)
-        month_tip = sum(r.get("tip_usage", 0) or 0 for r in daily_rows if str(r.get("date", "")[:7]) == current_month_prefix)
-
-        tou_values = {
-            "valley_usage": month_valley,
-            "flat_usage": month_flat,
-            "peak_usage": month_peak,
-            "tip_usage": month_tip,
-        }
 
         for field_key, sensor_base, label in tou_fields:
             value = tou_values.get(field_key, 0)
-            if value <= 0:
+            if not value or value <= 0:
                 continue
             sensorName = sensor_base + postfix
             if not self.should_update(sensorName, value, {"last_reset": last_reset}):
@@ -364,12 +375,12 @@ class SensorUpdator:
 
     def send_url(self, sensorName, request_body):
         headers = {
-            "Content-Type": "application-json",
+            "Content-Type": "application/json",
             "Authorization": "Bearer " + self.token,
         }
-        url = self.base_url + API_PATH + sensorName  # /api/states/<entity_id>
+        url = self.base_url + API_PATH + sensorName
         try:
-            response = requests.post(url, verify=False, json=request_body, headers=headers)
+            response = requests.post(url, json=request_body, headers=headers, timeout=15)
             logging.debug(
                 f"Home Assistant REST API 调用，POST {url}。响应[{response.status_code}]: {response.content}"
             )

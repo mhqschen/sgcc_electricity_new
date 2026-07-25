@@ -1,4 +1,4 @@
-"""
+﻿"""
 本脚本提供错误截图保存的封装功能。
 """
 
@@ -56,11 +56,11 @@ class ErrorWatcher:
             # 如果没有传入函数，则返回装饰器
             return decorator
 
-    def set_driver(self, driver):
+    def set_page(self, page):
         """
         设置用于截图的驱动。
         """
-        self.driver = driver
+        self.page = page
 
     def watch_this(self, func, **options):
         """
@@ -83,7 +83,7 @@ class ErrorWatcher:
         self.screenshot_dir = kwargs.get('screenshot_dir', os.path.join(self.root_dir, 'screenshots'))
         if not os.path.exists(self.screenshot_dir):
             os.makedirs(self.screenshot_dir)
-        self.driver = kwargs.get('driver', None)
+        self.page = kwargs.get('page', None)
 
     _instance = None
 
@@ -99,8 +99,8 @@ class ErrorWatcher:
         """
         error 参数当前未使用，保留以备将来使用。
         """
-        driver = options.get('driver', self.driver)
-        if not driver:
+        page = options.get('page', self.page)
+        if not page:
             logging.error("未设置截图驱动。")
             return
 
@@ -109,10 +109,11 @@ class ErrorWatcher:
         screenshot_path = os.path.join(self.screenshot_dir, f'error_{timestamp}.png')
 
         try:
-            self.driver.save_screenshot(screenshot_path)
+            page.screenshot(path=screenshot_path)
             logging.error(f"发生错误: {error_message}。截图已保存至 {screenshot_path}")
         except Exception as e:
             logging.error(f"保存截图失败: {e}")
             # 此处不抛出异常，避免掩盖原始错误
         finally:
             pass
+

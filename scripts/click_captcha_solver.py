@@ -33,9 +33,9 @@ class ClickCaptchaSolver:
                  api_key: Optional[str] = None,
                  model: Optional[str] = None,
                  base_url: Optional[str] = None):
-        self.api_key = api_key or const.LLM_API_KEY
-        self.model = model or const.LLM_MODEL
-        self.base_url = base_url or const.LLM_BASE_URL
+        self.api_key = api_key or os.getenv('LLM_API_KEY') or const.LLM_API_KEY
+        self.model = model or os.getenv('LLM_MODEL') or const.LLM_MODEL
+        self.base_url = base_url or os.getenv('LLM_BASE_URL') or const.LLM_BASE_URL
         self._client: Optional[OpenAI] = None
 
     @property
@@ -135,6 +135,7 @@ class ClickCaptchaSolver:
             content.append({"type": "text", "text": f"参考图标{labels[i]}"})
 
         content.append({"type": "image_url", "image_url": {"url": main_uri}})
+        content.append({"type": "text", "text": "Use only the visible captcha image above. Return center coordinates for A, B, C as JSON. Do not use page or hidden DOM coordinates."})
         content.append({"type": "text", "text": prompt})
 
         try:

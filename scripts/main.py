@@ -1,3 +1,4 @@
+import nest_asyncio; nest_asyncio.apply()
 import logging
 import logging.config
 import os
@@ -8,6 +9,7 @@ import json
 import random
 from error_watcher import ErrorWatcher
 from sensor_updator import SensorUpdator
+
 from datetime import datetime,timedelta
 from const import *
 from data_fetcher import DataFetcher
@@ -105,7 +107,9 @@ def run_task(data_fetcher: DataFetcher):
 
 def logger_init(level: str):
     logger = logging.getLogger()
-    logger.setLevel(level)
+    logger.setLevel(level.strip().strip('\'" '))  # 兼容 .env 中带引号和空格的 LOG_LEVEL
+    # 清除已有 handler（避免 basicConfig 自动添加的默认 handler 导致日志重复）
+    logger.handlers.clear()
     logging.getLogger("urllib3").setLevel(logging.CRITICAL)
     format = logging.Formatter("%(asctime)s  [%(levelname)-8s] ---- %(message)s", "%Y-%m-%d %H:%M:%S")
     sh = logging.StreamHandler(stream=sys.stdout)

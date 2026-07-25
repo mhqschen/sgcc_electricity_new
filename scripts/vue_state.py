@@ -10,6 +10,7 @@ from typing import Any, Optional
 
 
 SELECTED_VUE_DATA_SCRIPT = """
+(() => {
 const clone = (value) => {
   try { return JSON.parse(JSON.stringify(value)); } catch (e) { return null; }
 };
@@ -55,17 +56,18 @@ return Array.from(document.querySelectorAll('*'))
       tag: el.tagName,
       id: el.id || '',
       className: String(el.className || '').slice(0, 160),
-      text: (el.innerText || el.textContent || '').trim().slice(0, 500),
+      text: (el.innerText || el.textContent || '').trim().slice(0,500),
       data
     };
   })
   .filter(Boolean);
+})()
 """
 
 
-def selected_vue_data(driver) -> list[dict[str, Any]]:
+def selected_vue_data(page) -> list[dict[str, Any]]:
     """执行JS脚本，从当前页面提取Vue状态数据。"""
-    return driver.execute_script(SELECTED_VUE_DATA_SCRIPT) or []
+    return page.evaluate(SELECTED_VUE_DATA_SCRIPT) or []
 
 
 def normalize_user_info(components: list[dict[str, Any]]) -> dict[str, Any]:

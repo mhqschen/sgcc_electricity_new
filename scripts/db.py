@@ -1,176 +1,215 @@
+"""数据库抽象层：统一 SQLite / MySQL 接口，子类只负责连接和 SQL 执行。
+
+表结构（两种数据库一致，EAV 模式）：
+- daily{user_id}: date(PRIMARY KEY), usage(REAL)           -- 每日用电量
+- data{user_id}:  name(PRIMARY KEY), value(TEXT)            -- 扩展数据（月度/年度/用户信息等）
+"""
+
 import logging
 import os
 
+# ── SQLite ──
 import sqlite3
-import mysql.connector
+
+# ── MySQL ──（可选，仅 DB_TYPE=mysql 时导入）
+try:
+    import mysql.connector
+    _HAS_MYSQL = True
+except ImportError:
+    _HAS_MYSQL = False
+
 
 class DB:
-    def connect_user_db(self, user_id):
-        # 连接用户数据库的逻辑
-        pass
-    def insert_data(self, data:dict):
-        # 向数据库插入数据的逻辑
-        pass
-    def insert_expand_data(self, data:dict):
-        # 向数据库插入扩展数据的逻辑
-        pass
+    """数据库基类：定义统一数据操作接口。子类只需实现连接/执行/关闭/建表。"""
+
+    # ── 子类需覆写的方言属性 ──
+    db_type: str = "base"
+
+    # ── 子类需实现的方法 ──
+
+    def _connect(self):
+        raise NotImplementedError
+
+    def _execute(self, sql: str):
+        """执行一条写 SQL 并 commit。"""
+        raise NotImplementedError
+
+    def _close(self):
+        raise NotImplementedError
+
+    def _create_tables(self, user_id: str) -> bool:
+        raise NotImplementedError
+
+    # ── 统一接口 ──
+
+    def connect_user_db(self, user_id: str) -> bool:
+        try:
+            self._connect()
+            self.table_name = f"daily{user_id}"
+            self.table_expand_name = f"data{user_id}"
+            return self._create_tables(user_id)
+        except Exception as e:
+            logging.error(f"[{self.db_type}] 连接/建表失败: {e}")
+            return False
+
     def close_connect(self):
-        # 关闭连接
-        pass
+        try:
+            self._close()
+        except Exception:
+            pass
+
+    # ── 数据写入方法（子类共用，无需覆写） ──
+
+    def upsert_user(self, user_id: str, username: str, user_name: str):
+        self._execute(
+            f"INSERT OR REPLACE INTO {self.table_expand_name} VALUES"
+            f"('user_info', '{user_id}|{username}|{user_name}')")
+
+    def insert_balance_log(self, data: dict):
+        self._execute(
+            f"INSERT OR REPLACE INTO {self.table_expand_name} VALUES"
+            f"('balance_{data.get('date', 'latest')}', "
+            f"'{data.get('balance', 0)}|{data.get('user_name', '')}|"
+            f"{data.get('as_of', '')}|{data.get('amount_due', '')}')")
+
+    def insert_daily_data(self, data: dict):
+        self._execute(
+            f"INSERT OR REPLACE INTO {self.table_name} VALUES"
+            f"('{data['date']}', {data['total_usage']})")
+
+    def insert_monthly_data(self, data: dict):
+        month_key = data.get('month') or data.get('date', '')
+        self._execute(
+            f"INSERT OR REPLACE INTO {self.table_expand_name} VALUES"
+            f"('month_{month_key}', "
+            f"'{data.get('total_usage', 0)}|{data.get('total_charge', 0)}|"
+            f"{data.get('valley_usage', '')}|{data.get('flat_usage', '')}|"
+            f"{data.get('peak_usage', '')}|{data.get('tip_usage', '')}|"
+            f"{data.get('user_name', '')}')")
+
+    def insert_yearly_data(self, data: dict):
+        self._execute(
+            f"INSERT OR REPLACE INTO {self.table_expand_name} VALUES"
+            f"('year_{data.get('year', '')}', "
+            f"'{data.get('total_usage', 0)}|{data.get('total_charge', 0)}|"
+            f"{data.get('user_name', '')}')")
+
+    def insert_data(self, data: dict):
+        """原始每日数据写入（兼容旧调用）"""
+        self._execute(
+            f"INSERT OR REPLACE INTO {self.table_name} VALUES"
+            f"('{data['date']}', {data['usage']})")
+
+    def insert_expand_data(self, data: dict):
+        """原始扩展数据写入（兼容旧调用）"""
+        self._execute(
+            f"INSERT OR REPLACE INTO {self.table_expand_name} VALUES"
+            f"('{data['name']}', '{data['value']}')")
+
+    def cleanup_old_data(self):
+        try:
+            days = int(os.getenv("DATA_RETENTION_DAYS", 365))
+            self._execute(
+                f"DELETE FROM {self.table_name} "
+                f"WHERE date < date('now', '-{days} days')")
+        except Exception:
+            pass
+
+
+# ═══════════════════════════════════════════════════════════
+# SQLite 实现
+# ═══════════════════════════════════════════════════════════
 
 class SqliteDB(DB):
-    def connect_user_db(self, user_id):
-        """创建数据库集合，db_name = electricity_daily_usage_{user_id}
-        :param user_id: 用户ID"""
-        try:
-            # 创建数据库
-            DB_NAME = os.getenv("DB_NAME", "homeassistant.db")
-            if 'PYTHON_IN_DOCKER' in os.environ:
-                DB_NAME = "/data/" + DB_NAME
-            self.connect = sqlite3.connect(DB_NAME)
-            self.connect.cursor()
-            logging.info(f"数据库 {DB_NAME} 创建成功。")
-            # 创建表名
-            self.table_name = f"daily{user_id}"
-            sql = f'''CREATE TABLE IF NOT EXISTS {self.table_name} (
-                    date DATE PRIMARY KEY NOT NULL,
-                    usage REAL NOT NULL)'''
-            self.connect.execute(sql)
-            logging.info(f"数据表 {self.table_name} 创建成功")
+    db_type = "sqlite"
 
-				# 创建data表名
-            self.table_expand_name = f"data{user_id}"
-            sql = f'''CREATE TABLE IF NOT EXISTS {self.table_expand_name} (
-                    name TEXT PRIMARY KEY NOT NULL,
-                    value TEXT NOT NULL)'''
-            self.connect.execute(sql)
-            logging.info(f"数据表 {self.table_expand_name} 创建成功")
+    def _connect(self):
+        db_name = os.getenv("DB_NAME", "homeassistant.db")
+        if "PYTHON_IN_DOCKER" in os.environ:
+            db_name = "/data/" + db_name
+        self._conn = sqlite3.connect(db_name)
+        logging.info(f"[sqlite] 已连接 {db_name}")
 
-        # 如果表已存在，则不会创建
-        except sqlite3.Error as e:
-            logging.debug(f"创建数据库或数据表错误: {e}")
-            return False
+    def _execute(self, sql: str):
+        self._conn.execute(sql)
+        self._conn.commit()
+
+    def _close(self):
+        if getattr(self, "_conn", None):
+            self._conn.close()
+            self._conn = None
+            logging.info("[sqlite] 已关闭")
+
+    def _create_tables(self, user_id: str) -> bool:
+        self._conn.execute(f"""CREATE TABLE IF NOT EXISTS {self.table_name} (
+            date DATE PRIMARY KEY NOT NULL,
+            usage REAL NOT NULL)""")
+        logging.info(f"[sqlite] 表 {self.table_name} OK")
+        self._conn.execute(f"""CREATE TABLE IF NOT EXISTS {self.table_expand_name} (
+            name TEXT PRIMARY KEY NOT NULL,
+            value TEXT NOT NULL)""")
+        self._conn.commit()
+        logging.info(f"[sqlite] 表 {self.table_expand_name} OK")
         return True
 
-    def insert_data(self, data:dict):
-        if self.connect is None:
-            logging.error("数据库连接未建立。")
-            return
-        # 创建索引
-        try:
-            sql = f"INSERT OR REPLACE INTO {self.table_name} VALUES(strftime('%Y-%m-%d','{data['date']}'),{data['usage']});"
-            self.connect.execute(sql)
-            self.connect.commit()
-        except BaseException as e:
-            logging.debug(f"数据更新失败: {e}")
 
-    def insert_expand_data(self, data:dict):
-        if self.connect is None:
-            logging.error("数据库连接未建立。")
-            return
-        # 创建索引
-        try:
-            sql = f"INSERT OR REPLACE INTO {self.table_expand_name} VALUES('{data['name']}','{data['value']}');"
-            self.connect.execute(sql)
-            self.connect.commit()
-        except BaseException as e:
-            logging.debug(f"数据更新失败: {e}")
-
-    def close_connect(self):
-        if self.connect:
-            self.connect.close()
-            self.connect = None
-            logging.info("数据库连接已关闭。")
+# ═══════════════════════════════════════════════════════════
+# MySQL 实现
+# ═══════════════════════════════════════════════════════════
 
 class MysqlDB(DB):
-    def connect_user_db(self, user_id):
+    db_type = "mysql"
+
+    def _connect(self):
+        if not _HAS_MYSQL:
+            raise RuntimeError("mysql-connector-python 未安装")
+        self._conn = mysql.connector.connect(
+            host=os.getenv("MYSQL_HOST"),
+            user=os.getenv("MYSQL_USER"),
+            password=os.getenv("MYSQL_PASSWORD"),
+            database=os.getenv("MYSQL_DATABASE"),
+            port=int(os.getenv("MYSQL_PORT", 3306)),
+        )
+        if self._conn.is_connected():
+            logging.info(f"[mysql] 已连接 {os.getenv('MYSQL_DATABASE')}")
+        else:
+            raise ConnectionError("MySQL 连接失败")
+
+    def _execute(self, sql: str):
+        # REPLACE INTO 语法替换
+        sql = sql.replace("INSERT OR REPLACE INTO", "REPLACE INTO")
+        cursor = self._conn.cursor()
         try:
-            host = os.getenv("MYSQL_HOST")
-            user = os.getenv("MYSQL_USER")
-            password = os.getenv("MYSQL_PASSWORD")
-            database = os.getenv("MYSQL_DATABASE")
-            port = int(os.getenv("MYSQL_PORT", 3306))
-            self.connect = mysql.connector.connect(
-                host=host,
-                user=user,
-                password=password,
-                database=database,
-                port=port
-            )
-
-            if self.connect.is_connected():
-                logging.info(f"已连接 MySQL 数据库。")
-                return self.create_tabe(user_id)
-            else:
-                logging.error("连接 MySQL 数据库失败。")
-                return False
-        except BaseException as e:
-            logging.error(f"缺少 MySQL 配置: {e}")
-            return False
-
-    def create_tabe(self, user_id):
-        try:
-            cursor = self.connect.cursor()
-            # 创建表名
-            self.table_name = f"sg_daily_{user_id}"
-            sql = f'''CREATE TABLE IF NOT EXISTS `{self.table_name}` (
-                    `date` DATE PRIMARY KEY NOT NULL,
-                    `usage` REAL NOT NULL)'''
             cursor.execute(sql)
-            logging.info(f"数据表 {self.table_name} 创建成功")
-
-            # 创建data表名
-            self.table_expand_name = f"sg_data_{user_id}"
-            sql = f'''CREATE TABLE IF NOT EXISTS `{self.table_expand_name}` (
-                    `name` varchar(100) PRIMARY KEY NOT NULL,
-                    `value` TEXT NOT NULL)'''
-            cursor.execute(sql)
-            logging.info(f"数据表 {self.table_expand_name} 创建成功")
-            self.connect.commit()
-        except BaseException as e:
-            logging.error(f"创建数据表错误: {e}")
-            return False
+            self._conn.commit()
         finally:
-            if cursor:
-                cursor.close()
+            cursor.close()
+
+    def _close(self):
+        if getattr(self, "_conn", None) and self._conn.is_connected():
+            self._conn.close()
+            self._conn = None
+            logging.info("[mysql] 已关闭")
+
+    def _create_tables(self, user_id: str) -> bool:
+        self._execute(f"""CREATE TABLE IF NOT EXISTS `{self.table_name}` (
+            `date` DATE PRIMARY KEY NOT NULL,
+            `usage` REAL NOT NULL)""")
+        logging.info(f"[mysql] 表 {self.table_name} OK")
+        self._execute(f"""CREATE TABLE IF NOT EXISTS `{self.table_expand_name}` (
+            `name` varchar(100) PRIMARY KEY NOT NULL,
+            `value` TEXT NOT NULL)""")
+        logging.info(f"[mysql] 表 {self.table_expand_name} OK")
         return True
 
-    def insert_data(self, data:dict):
-        if self.connect is None:
-            logging.error("数据库连接未建立。")
-            return
-        try:
-            cursor = self.connect.cursor()
-            sql = f"REPLACE INTO `{self.table_name}` VALUES(str_to_date('{data['date']}', '%Y-%m-%d'),{data['usage']});"
-            cursor.execute(sql)
-            self.connect.commit()
-            return True
-        except BaseException as e:
-            logging.error(f"数据更新失败: {e}")
-        finally:
-            if cursor:
-                cursor.close()
-        return False
 
-    def insert_expand_data(self, data:dict):
-        if self.connect is None:
-            logging.debug("数据库连接未建立。")
-            return
-        try:
-            cursor = self.connect.cursor()
-            sql = f"REPLACE INTO `{self.table_expand_name}` VALUES('{data['name']}','{data['value']}');"
-            cursor.execute(sql)
-            self.connect.commit()
-            return True
-        except BaseException as e:
-            logging.error(f"数据更新失败: {e}")
-        finally:
-            if cursor:
-                cursor.close()
-        return False
+# ═══════════════════════════════════════════════════════════
+# 工厂函数
+# ═══════════════════════════════════════════════════════════
 
-    def close_connect(self):
-        if self.connect and self.connect.is_connected():
-            self.connect.close()
-            self.connect = None
-            logging.info("MySQL 数据库连接已关闭。")
+def create_db(db_type: str) -> DB:
+    """根据配置创建数据库实例。"""
+    t = db_type.lower()
+    if t == "mysql":
+        return MysqlDB()
+    return SqliteDB()

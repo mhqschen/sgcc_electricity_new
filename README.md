@@ -73,7 +73,28 @@
 
 ## 实现流程
 
-通过 Python 的 Selenium 自动化获取国家电网官网的电费电量数据，使用**原生 Selenium + Chrome 反检测标志位**绕过网站的反爬虫检测（全平台兼容，包括 ARMv6/v7）。登录时的**腾讯点击/滑动验证码**通过**大模型（LLM）视觉识别**自动解算，无需依赖传统 OCR 或 ONNX 神经网络模型。获取数据后通过 Home Assistant 的 [REST API](https://developers.home-assistant.io/docs/api/rest/) 将实体状态 POST 更新到 Home Assistant。
+通过 Python 的 **Playwright** 自动化获取国家电网官网的电费电量数据，绕过网站的反爬虫检测。
+
+登录支持两种模式，验证码均由**大模型（LLM）视觉识别**自动解算：
+
+| 登录方式                        | 验证码类型                   | LLM 方案                                | 适用场景 |
+| ------------------------------- | ---------------------------- | --------------------------------------- | -------- |
+| 密码登录                        | 腾讯**图标点击**验证码 | DOM 提取参考图标 + 主图 → 图标匹配定位 | 生产环境 |
+| 短信验证码登录 (`DEBUG_MODE`) | 腾讯**文字顺序**验证码 | 截图 + LLM 读提示文字 → 按顺序点击汉字 | 本机调试 |
+
+Cookie 自动持久化到 `data/sgcc_cookies.json`，下次启动时复用，避免频繁登录触发风控。数据获取优先使用页面 **Vue 状态注入**（一次性提取年度/月度/日分时数据），DOM 方式兜底。获取数据后通过 Home Assistant 的 [REST API](https://developers.home-assistant.io/docs/api/rest/) 将实体状态 POST 更新到 Home Assistant。
+
+## Cookie 持久化机制
+
+程序在浏览器登录成功后，会自动将会话 Cookie 保存到 `data/sgcc_cookies.json` 文件中。下次启动时优先加载已有 Cookie，如果 Cookie 仍然有效则直接复用，无需重新登录。
+
+**工作流程：**
+
+1. 首次运行 → 完整登录流程（账号密码 + 验证码）→ 登录成功 → `_save_cookies()` 保存 Cookie
+2. 后续运行 → `_load_cookies()` 加载 Cookie → `_validate_cookies()` 验证有效性 → 有效则跳过登录
+3. Cookie 过期或无效 → 重新走完整登录流程，覆盖旧 Cookie 文件
+
+> **注意：** 国网每天有登录次数限制，Cookie 持久化可有效避免频繁登录触发 RK001 风控。如遇到登录失败，删除 `data/sgcc_cookies.json` 后重试。
 
 # 安装与部署
 
@@ -84,19 +105,20 @@
 ### 注册步骤
 
 1. **注册火山引擎账号**：访问 [火山引擎官网](https://www.volcengine.com/)，使用手机号注册并完成**实名认证**（个人或企业均可）。
-   - 实名认证入口：https://console.volcengine.com/user/authentication/detail/
 
+   - 实名认证入口：https://console.volcengine.com/user/authentication/detail/
 2. **开通豆包大模型**：登录 [火山方舟控制台](https://console.volcengine.com/ark)，在**「在线推理」**页面点击**「创建推理接入点」**：
+
    - 选择模型：**Doubao-Seed-2.0-pro-260215**（或其他多模态视觉模型）
    - 记录生成的**接入点 ID**（格式如 `ep-2025xxxxxx-xxxxx`）
-
 3. **获取 API Key**：在方舟控制台左侧菜单选择**「API Key 管理」**→ 点击**「创建 API Key」**→ 复制生成的 Key（格式如 `ark-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`）。
 
    > 详细图解教程请参考：[火山引擎ARK API 豆包大模型接入教程](https://zhuanlan.zhihu.com/p/2006346459101041060)
-
+   >
 4. **配置到 `.env` 文件**：将获取的 API Key 填入环境变量
+
    ```bash
-   ARK_API_KEY="ark-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+   LLM_API_KEY="ark-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
    ```
 
 ### 费用说明
@@ -105,7 +127,11 @@
 
 ### 我们使用的模型
 
-本项目通过 OpenAI 兼容接口调用 **`doubao-seed-2-0-pro-260215`** 模型，该模型具备强大的多模态视觉识别能力，能够准确识别验证码中的图标位置和滑块缺口。
+本项目通过 OpenAI 兼容接口调用 **`doubao-seed-2-0-pro-260215`** 模型，该模型具备强大的多模态视觉识别能力，能够准确识别：
+
+- **图标点击验证码**：匹配参考图标到大图网格位置 → 返回点击坐标
+- **文字顺序验证码**：读取提示文字顺序 → 在候选区定位汉字 → 按序点击
+- **滑块验证码**：识别缺口位置 → 计算拖动距离
 
 ---
 
@@ -217,12 +243,19 @@ QR_CODE_LOGIN_WAIT_TIME_INTERVAL_UNIT=10
 # OP_NUM_THREADS=2
 
 ## 大模型验证码识别配置（必填）
-# 火山引擎 ARK API Key，用于调用豆包大模型解算腾讯验证码
+# 火山引擎 ARK API Key，用于调用豆包大模型解算验证码（点击型 + 文字顺序型）
 # 获取地址：https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey
-ARK_API_KEY="your-ark-api-key-here"
+LLM_API_KEY="your-ark-api-key-here"
+
+## 大模型可选配置
+# 自定义 API 地址和模型（默认使用豆包模型）
+# LLM_BASE_URL="https://ark.cn-beijing.volces.com/api/v3"
+# LLM_MODEL="doubao-seed-2-0-pro-260215"
 
 ## 调试模式（可选）
-# 设置为 true 启用短信验证码登录模式（需要人工输入短信验证码）
+# 设置为 true 启用调试模式（仅限本机运行，Docker 中无效）：
+#   浏览器窗口可见 — 可观察完整自动化操作过程
+#   短信验证码登录 — 通过弹窗输入短信码，验证码由 LLM 自动解算
 # DEBUG_MODE=false
 
 ## 用户名映射（可选）
@@ -244,19 +277,16 @@ docker-compose logs sgcc_electricity_app
 运行成功应该显示如下日志：
 
 ```bash
-2024-06-06 16:00:43  [INFO    ] ---- 程序开始，当前仓库版本为1.x.x，仓库地址为https://github.com/ARC-MX/sgcc_electricity_new.git
-2024-06-06 16:00:43  [INFO    ] ---- enable_database_storage为false，不会储存到数据库
-2024-06-06 16:00:43  [INFO    ] ---- 当前登录的用户名为: xxxxxx，homeassistant地址为http://192.168.1.xx:8123/,程序将在每天00:00执行
-2024-06-06 16:00:43  [INFO    ] ---- 此次为首次运行，等待时间(FIRST_SLEEP_TIME)为10秒，可在.env中设置
-2024-06-06 16:00:59  [INFO    ] ---- Webdriver initialized.
-2024-06-06 16:01:20  [INFO    ] ---- Click login button.
-2024-06-06 16:01:20  [INFO    ] ---- Get electricity canvas image successfully.
-2024-06-06 16:01:20  [INFO    ] ---- Image CaptCHA distance is xxx.
-2024-06-06 16:01:25  [INFO    ] ---- Login successfully on https://www.95598.cn/osgweb/login
-2024-06-06 16:01:33  [INFO    ] ---- 将获取1户数据，user_id: ['xxxxxxx']
-2024-06-06 16:01:42  [INFO    ] ---- Get electricity charge balance for xxxxxxx successfully, balance is xxx CNY.
-2024-06-06 16:01:51  [INFO    ] ---- Get year power usage for xxxxxxx successfully, usage is xxx kwh
-2024-06-06 16:01:51  [INFO    ] ---- Get year power charge for xxxxxxx successfully, yealrly charge is xxx CNY
+2026-07-24 07:00:15  [INFO    ] ---- 程序开始，当前仓库版本为1.x.x
+2026-07-24 07:00:15  [INFO    ] ---- 当前登录的用户名为: xxxxxx
+2026-07-24 07:00:16  [INFO    ] ---- Browser ready (standard + stealth)
+2026-07-24 07:00:30  [INFO    ] ---- 已输入用户名: 138xxxxxxxx
+2026-07-24 07:00:45  [INFO    ] ---- Cookie 有效，跳过登录
+2026-07-24 07:00:52  [INFO    ] ---- [640xxxxxxxxx] 电费余额: 27.66 元
+2026-07-24 07:01:05  [INFO    ] ---- [640xxxxxxxxx] 年度用电量: 1691 度, 年度电费: 758.57 元 (Vue)
+2026-07-24 07:01:15  [INFO    ] ---- [640xxxxxxxxx] 2026-07: 用电 169 度, 电费 75.81 元 (Vue)
+2026-07-24 07:01:20  [INFO    ] ---- [640xxxxxxxxx] 最近用电: 2026-07-23 6.56 度 (Vue)
+2026-07-24 07:01:30  [INFO    ] ---- Home Assistant 传感器更新完成!
 2024-06-06 16:01:55  [INFO    ] ---- Get month power charge for xxxxxxx successfully, 01 月 usage is xxx KWh, charge is xxx CNY.
 2024-06-06 16:01:55  [INFO    ] ---- Get month power charge for xxxxxxx successfully, 02 月 usage is xxx KWh, charge is xxx CNY.
 2024-06-06 16:01:55  [INFO    ] ---- Get month power charge for xxxxxxx successfully, 2024-03-01-2024-03-31 usage is xxx KWh, charge is xxx CNY.
@@ -549,9 +579,10 @@ cards:
 * 2024-07-05：新增余额不足提醒功能。
 * 2024-12-10：新增忽略指定用户ID的功能：针对一些用户拥有充电或者发电账户，可以使用 IGNORE_USER_ID 环境变量忽略特定的ID。
 * 2025-01-05：新增Homeassistant Add-on部署方式。
-* 2025-05-01：**重大更新**：验证码识别从 ONNX 神经网络升级为**大模型（LLM）视觉识别方案**，使用火山引擎豆包模型解算腾讯点击/滑块验证码。浏览器反检测从  undetected-chromedriver 升级为 **CloakBrowser**（Chromium C++ 源码级反检测）。
-* 2025-05-20：**平台兼容性更新**：弃用 CloakBrowser，改用原生 Selenium + Chrome 反检测标志位方案（参考 ha-95598），全面支持 ARMv6/v7 平台（树莓派2、玩客云等）。
-2025-05-15：新增**分时电量传感器**（谷/平/峰/尖）、**预付费余额传感器**、**应交金额传感器**；支持 Vue 状态直接注入提取数据。
+* 2025-05-01：**重大更新**：验证码识别从 ONNX 升级为**大模型（LLM）视觉识别**。浏览器反检测升级为 **Playwright + CloakBrowser**。
+* 2025-05-20：Playwright + Chrome 反检测标志位方案，全面支持 ARMv6/v7 平台。
+* 2025-07-24：**架构升级**：数据获取优先 Vue 状态注入（一次性提取全部数据），DOM 解析兜底。新增 DEBUG_MODE 短信登录 + 文字顺序验证码 LLM 识别。分时电量传感器优先使用账单数据。移除 Selenium 遗留代码。
+  2025-05-15：新增**分时电量传感器**（谷/平/峰/尖）、**预付费余额传感器**、**应交金额传感器**；支持 Vue 状态直接注入提取数据。
 
 ### TO-DO
 
@@ -560,6 +591,11 @@ cards:
 - [X] 添加Homeassistant Add-on安装方式，在此感谢[Ami8834671](https://github.com/Ami8834671), [DuanXDong](https://github.com/DuanXDong)等小伙伴的idea和贡献
 - [X] 添加大模型（LLM）验证码识别方案（火山引擎豆包模型）
 - [X] 添加 CloakBrowser 反检测浏览器支持
+- [X] 添加 Cookie 持久化机制（data/sgcc_cookies.json）
+- [X] 添加 DEBUG_MODE 短信登录 + 文字顺序验证码 LLM 识别
+- [X] 数据获取优先 Vue 状态注入，DOM 解析兜底
+- [X] 分时电量传感器优先账单数据
+- [ ] 添加 Home Assistant integration
 - [X] 添加分时电量传感器（谷/平/峰/尖）在此感谢[renxiaoyaoo](https://github.com/renxiaoyaoo)的实现思路
 - [X] 添加预付费余额/应交金额传感器
 - [ ] 添加置Homeassistant integration

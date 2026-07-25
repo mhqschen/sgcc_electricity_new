@@ -28,8 +28,8 @@ def main():
                 os.environ[key] = str(value)
             import const
             const.LLM_API_KEY = os.getenv('LLM_API_KEY', '').strip()
-            const.LLM_BASE_URL = os.getenv('LLM_BASE_URL', 'https://ark.cn-beijing.volces.com/api/v3')
-            const.LLM_MODEL = os.getenv('LLM_MODEL', 'doubao-seed-2-0-pro-260215')
+            const.LLM_BASE_URL = os.getenv('LLM_BASE_URL', 'https://api.siliconflow.cn/v1')
+            const.LLM_MODEL = os.getenv('LLM_MODEL', 'Qwen/Qwen3.5-35B-A3B')
             logging.info(f"当前以Homeassistant Add-on 形式运行.")
         except Exception as e:
             logging.error(f"读取 options.json 文件失败，程序将退出，错误信息: {e}。")
@@ -101,6 +101,10 @@ def run_task(data_fetcher: DataFetcher):
         try:
             data_fetcher.fetch()
             return
+        except RuntimeError as e:
+            # LLM 配置错误等不可恢复错误，立即退出
+            logging.error(f"致命错误，程序退出: {e}")
+            sys.exit(1)
         except Exception as e:
             logging.error(f"状态刷新任务失败，原因是 [{e}]，还剩 {RETRY_TIMES_LIMIT - retry_times} 次重试机会。")
             continue

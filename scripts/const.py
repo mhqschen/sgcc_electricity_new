@@ -29,8 +29,8 @@ BALANCE_UNIT = "CNY"
 USAGE_UNIT = "KWH"
 
 LLM_API_KEY = os.getenv('LLM_API_KEY', '').strip()
-LLM_BASE_URL = os.getenv('LLM_BASE_URL', 'https://ark.cn-beijing.volces.com/api/v3')
-LLM_MODEL = os.getenv('LLM_MODEL', 'doubao-seed-2-0-pro-260215')
+LLM_BASE_URL = os.getenv('LLM_BASE_URL', 'https://api.siliconflow.cn/v1')
+LLM_MODEL = os.getenv('LLM_MODEL', 'Qwen/Qwen3.5-35B-A3B')
 
 
 def get_data_dir() -> str:

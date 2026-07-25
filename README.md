@@ -100,34 +100,39 @@ Cookie 自动持久化到 `data/sgcc_cookies.json`，下次启动时复用，避
 
 ## 0）获取大模型 API Key（必读）
 
-本项目使用**火山引擎豆包大模型（doubao-seed-2-0-pro-260215）**自动解算国家电网的腾讯验证码（点击型+滑块型），因此需要先获取火山引擎 ARK API Key。
+本项目使用**硅基流动（SiliconFlow）** 的 **Qwen/Qwen3.5-35B-A3B** 多模态大模型自动解算国家电网验证码。支持任意 OpenAI 兼容 API。
 
 ### 注册步骤
 
-1. **注册火山引擎账号**：访问 [火山引擎官网](https://www.volcengine.com/)，使用手机号注册并完成**实名认证**（个人或企业均可）。
+> **🎁 推荐链接：https://cloud.siliconflow.cn/i/2JCjsjdB（邀请码 `2JCjsjdB`），点击注册即赠 2000 万 tokens！**
 
-   - 实名认证入口：https://console.volcengine.com/user/authentication/detail/
-2. **开通豆包大模型**：登录 [火山方舟控制台](https://console.volcengine.com/ark)，在**「在线推理」**页面点击**「创建推理接入点」**：
+<p align="center">
+<img src="assets/share_sf-2JCjsjdB.png" alt="硅基流动注册二维码" width="250">
+</p>
 
-   - 选择模型：**Doubao-Seed-2.0-pro-260215**（或其他多模态视觉模型）
-   - 记录生成的**接入点 ID**（格式如 `ep-2025xxxxxx-xxxxx`）
-3. **获取 API Key**：在方舟控制台左侧菜单选择**「API Key 管理」**→ 点击**「创建 API Key」**→ 复制生成的 Key（格式如 `ark-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`）。
-
-   > 详细图解教程请参考：[火山引擎ARK API 豆包大模型接入教程](https://zhuanlan.zhihu.com/p/2006346459101041060)
-   >
-4. **配置到 `.env` 文件**：将获取的 API Key 填入环境变量
-
+1. 注册 [硅基流动账号](https://cloud.siliconflow.cn/i/2JCjsjdB)：`https://cloud.siliconflow.cn/i/2JCjsjdB`（邀请码 `2JCjsjdB`），新用户赠 2000 万 tokens。
+2. 在控制台创建 API Key。
+3. 配置到 `.env` 文件：
    ```bash
-   LLM_API_KEY="ark-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+   LLM_API_KEY="sk-xxxxx"
    ```
 
 ### 费用说明
 
-豆包系列模型按 token 计费，每次验证码解算消耗极少（约 500 token），注册即赠送免费额度，个人使用基本免费。具体定价见 [火山引擎官方定价页](https://www.volcengine.com/docs/82379/1099320)。
+`Qwen3.5-35B-A3B` 输入仅 **¥0.0004 / K tokens**，每次验证码解算约 500 token，个人使用几乎免费。也可切换其他**多模态模型**：
+
+| 模型 | 输入价格 | 备注 |
+|------|---------|------|
+| `Qwen/Qwen3.5-35B-A3B` | ¥0.0004/K tokens | 推荐 |
+| `Qwen/Qwen2.5-VL-72B-Instruct` | ¥0.004/K tokens | 更准确 |
+| `gpt-4o` | ~¥0.015/K tokens | OpenAI |
+| `doubao-seed-2-0-pro` | ~¥0.004/K tokens | 火山引擎 |
+
+> **注意：DeepSeek 全系列（V3/V4/R1）均为纯文本模型，不支持图片识别，无法用于验证码解算。**
 
 ### 我们使用的模型
 
-本项目通过 OpenAI 兼容接口调用 **`doubao-seed-2-0-pro-260215`** 模型，该模型具备强大的多模态视觉识别能力，能够准确识别：
+本项目通过 OpenAI 兼容接口调用 **`Qwen/Qwen3.5-35B-A3B`** 多模态模型，能够准确识别：
 
 - **图标点击验证码**：匹配参考图标到大图网格位置 → 返回点击坐标
 - **文字顺序验证码**：读取提示文字顺序 → 在候选区定位汉字 → 按序点击
@@ -243,14 +248,10 @@ QR_CODE_LOGIN_WAIT_TIME_INTERVAL_UNIT=10
 # OP_NUM_THREADS=2
 
 ## 大模型验证码识别配置（必填）
-# 火山引擎 ARK API Key，用于调用豆包大模型解算验证码（点击型 + 文字顺序型）
-# 获取地址：https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey
-LLM_API_KEY="your-ark-api-key-here"
-
-## 大模型可选配置
-# 自定义 API 地址和模型（默认使用豆包模型）
-# LLM_BASE_URL="https://ark.cn-beijing.volces.com/api/v3"
-# LLM_MODEL="doubao-seed-2-0-pro-260215"
+# 默认硅基流动 Qwen 多模态模型（DeepSeek 等纯文本模型不支持图片识别）
+LLM_API_KEY="your-api-key-here"
+LLM_BASE_URL="https://api.siliconflow.cn/v1"
+LLM_MODEL="Qwen/Qwen3.5-35B-A3B"
 
 ## 调试模式（可选）
 # 设置为 true 启用调试模式（仅限本机运行，Docker 中无效）：
@@ -589,7 +590,7 @@ cards:
 - [X] 增加离线滑动验证码识别方案 → 已升级为 LLM 视觉方案
 - [X] 添加默认推送服务，电费余额不足提醒
 - [X] 添加Homeassistant Add-on安装方式，在此感谢[Ami8834671](https://github.com/Ami8834671), [DuanXDong](https://github.com/DuanXDong)等小伙伴的idea和贡献
-- [X] 添加大模型（LLM）验证码识别方案（火山引擎豆包模型）
+- [X] 添加大模型（LLM）验证码识别方案（硅基流动 Qwen）
 - [X] 添加 CloakBrowser 反检测浏览器支持
 - [X] 添加 Cookie 持久化机制（data/sgcc_cookies.json）
 - [X] 添加 DEBUG_MODE 短信登录 + 文字顺序验证码 LLM 识别

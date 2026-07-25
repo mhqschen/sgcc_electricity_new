@@ -287,7 +287,7 @@ def _solve_slider(page: Page, selectors: dict) -> bool:
 
     except Exception as e:
         logger.error(f"Slider solve error: {e}")
-        return False
+        raise RuntimeError(f"LLM 调用失败: {e}") from e
 
 
 # ======================================================================

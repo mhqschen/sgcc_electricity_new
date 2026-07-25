@@ -52,8 +52,6 @@ class DataFetcher:
         self.LOGIN_EXPECTED_TIME = int(os.getenv("LOGIN_EXPECTED_TIME", 10))
         self.RETRY_WAIT_TIME_OFFSET_UNIT = int(os.getenv("RETRY_WAIT_TIME_OFFSET_UNIT", 10))
         self.IGNORE_USER_ID = os.getenv("IGNORE_USER_ID", "xxxxx,xxxxx").split(",")
-        self.QR_CODE_LOGIN_WAIT_COUNT = int(os.getenv("QR_CODE_LOGIN_WAIT_COUNT", 7))
-        self.QR_CODE_LOGIN_WAIT_TIME_INTERVAL_UNIT = int(os.getenv("QR_CODE_LOGIN_WAIT_TIME_INTERVAL_UNIT", 10))
         self._user_name_map = {}
         raw_names = os.getenv("USER_NAMES", "")
         if raw_names:
@@ -1083,10 +1081,10 @@ class DataFetcher:
             logging.error("LLM_API_KEY 未设置")
             return False
         client = OpenAI(
-            base_url=os.getenv("LLM_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3").strip(),
+            base_url=os.getenv("LLM_BASE_URL", "https://api.siliconflow.cn/v1").strip(),
             api_key=api_key,
         )
-        model = os.getenv("LLM_MODEL", "doubao-seed-2-0-pro-260215").strip()
+        model = os.getenv("LLM_MODEL", "Qwen/Qwen3.5-35B-A3B").strip()
         prompt = (
             "中文文字顺序验证码。读提示→找候选汉字→按顺序返回比例坐标。"
             '输出JSON：{"sequence":["字1","字2","字3"],"coords":[[x1,y1],[x2,y2],[x3,y3]]}'
@@ -1132,7 +1130,7 @@ class DataFetcher:
                 logging.info(f"LLM: {result_text[:150]}")
             except Exception as e:
                 logging.error(f"LLM 失败: {e}")
-                continue
+                raise RuntimeError(f"LLM 调用失败: {e}") from e
 
             sequence, coords = self._parse_text_captcha(result_text, img_w, img_h)
             if len(coords) < 2:

@@ -1,7 +1,7 @@
 """
 点击验证码 LLM 解算器
 
-使用火山引擎豆包大模型识别验证码中的图标位置，按参考图标顺序返回点击坐标。
+使用硅基流动 Qwen 多模态大模型识别验证码中的图标位置，按参考图标顺序返回点击坐标。
 
 策略:
 1. 下载参考图标条，按三等分裁剪为3个独立图标
@@ -153,7 +153,8 @@ class ClickCaptchaSolver:
             return self._parse_coordinates(output, main_width, main_height)
         except Exception as e:
             logger.error(f"大模型错误: {e}")
-            return []
+            # 400/401/403 等配置错误不应重试，直接抛出终止
+            raise RuntimeError(f"LLM 调用失败: {e}") from e
 
     def _parse_coordinates(self, text: str,
                            main_width: int, main_height: int) -> List[Tuple[int, int]]:

@@ -2,7 +2,6 @@ import typing as typ
 import os
 import logging
 import requests
-import io
 
 class PushplusNotify(typ.NamedTuple):
 
@@ -34,19 +33,5 @@ class UrlPushNotify(typ.NamedTuple):
             logging.info(
                 f"用户 {user_id} 当前余额 {balance} 元低于 {BALANCE} 元，已发送通知，请注意查收并及时充值。"
             )
-            return resp.status_code == 200
-        return False
-
-class UrlLoginQrCodeNotify(typ.NamedTuple):
-
-    def __call__(self, qrcode) -> bool:
-        url = os.getenv("PUSH_QRCODE_URL")
-
-        if url:
-            files = {
-                'file': ("qrcode.png", io.BytesIO(qrcode), 'image/png')
-            }
-            resp = requests.post(url, files=files)
-            logging.info("推送二维码到URL")
             return resp.status_code == 200
         return False

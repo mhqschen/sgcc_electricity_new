@@ -21,6 +21,7 @@ _COOKIE_FILE = os.path.join(get_data_dir(), "sgcc_cookies.json")
 
 import numpy as np
 from captcha_playwright import solve_captcha_in_browser
+from captcha_text_sequence import solve_text_sequence_captcha
 import vue_state
 
 # CloakBrowser: C++ 源码级隐身 Chromium，Playwright 的 drop-in 替代
@@ -666,18 +667,25 @@ class DataFetcher:
                 self._random_delay(0.5, 1.5)
                 logging.info("已点击发送验证码，等待短信...\r")
 
-                # ── 步骤2：弹出 GUI 对话框输入短信验证码 ──
+                # ── 步骤2：弹出 GUI 对话框输入短信验证码（必须6位数字）──
                 import tkinter as tk
-                from tkinter import simpledialog
+                from tkinter import simpledialog, messagebox
                 root = tk.Tk()
                 root.withdraw()
                 root.attributes('-topmost', True)
-                code = simpledialog.askstring("短信验证码", "请输入手机短信验证码：", parent=root)
+                code = None
+                while True:
+                    code = simpledialog.askstring("短信验证码", "请输入6位手机短信验证码：", parent=root)
+                    if code is None:  # 用户点取消
+                        root.destroy()
+                        logging.error("未输入验证码，登录取消")
+                        page.remove_listener("response", _on_response)
+                        return False
+                    code = code.strip()
+                    if len(code) == 6 and code.isdigit():
+                        break
+                    messagebox.showwarning("格式错误", f"验证码必须为6位数字，当前输入 {len(code)} 位", parent=root)
                 root.destroy()
-                if not code:
-                    logging.error("未输入验证码，登录取消")
-                    page.remove_listener("response", _on_response)
-                    return False
                 els[3].fill(code)
                 logging.info(f"已输入验证码: {code}。\r")
 
@@ -691,7 +699,7 @@ class DataFetcher:
                 # SMS 登录后弹出的是「文字顺序验证码」：需按提示顺序依次点击文字
                 # 非 debug 模式（密码登录）弹出的是图标点击验证码，两者 LLM prompt 不同
                 logging.info("弹出文字顺序验证码，使用 DEBUG_MODE 专用方案...")
-                captcha_passed = self._solve_text_sequence_captcha(page)
+                captcha_passed = solve_text_sequence_captcha(page, LOGIN_URL, self.RETRY_TIMES_LIMIT)
                 if captcha_passed:
                     logging.info("验证码已通过，等待页面跳转...")
                     for _ in range(5):
@@ -916,359 +924,6 @@ class DataFetcher:
     # 要按什么顺序点击哪些汉字，下方是一组打乱的汉字候选。因此这里采用
     # “整张验证码截图 + 坐标点击”方案，且使用专门面向文字顺序任务的提示词。
     # ──────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _is_captcha_handle_visible(el) -> bool:
-        """判断验证码句柄是否真正可见（排除预加载的离屏隐藏 DOM）。"""
-        try:
-            if el is None or not el.is_visible():
-                return False
-            box = el.bounding_box()
-            if not box:
-                return False
-            if box["width"] < 80 or box["height"] < 80:
-                return False
-            # 排除预加载的离屏 DOM（top/left 极大负值，如 -1000000px）
-            if box["y"] < -500 or box["x"] < -500:
-                return False
-            return True
-        except Exception:
-            return False
-
-    def _locate_captcha_widget(self):
-        """跨『主页面 / iframe / 新弹窗』定位可见的腾讯验证码控件。
-
-        关键修复：短信登录后，TencentCaptcha 经常用 window.open 把验证码弹到
-        **新窗口**（或嵌在 iframe 里），而旧逻辑只在登录主页 query_selector，
-        永远找不到 → 一直刷新 → 验证码卡在新窗口里。这里遍历所有已打开的页面
-        及其所有 frame，返回 (承载验证码的 page, 验证码元素)。
-        """
-        selectors = [
-            ".tencent-captcha-dy__warp",
-            "#tCaptchaDyContent",
-            ".tencent-captcha-dy__wrapper",
-            ".tencent-captcha__wrapper",
-        ]
-        # 把登录主页排在最前，再附加上下文里其它（弹窗）页面
-        pages = [self._page] + [p for p in self._context.pages if p != self._page]
-        for pg in pages:
-            try:
-                if pg is None or pg.is_closed():
-                    continue
-            except Exception:
-                continue
-            try:
-                frames = list(pg.frames)
-            except Exception:
-                frames = []
-            for frame in frames:
-                for sel in selectors:
-                    try:
-                        el = frame.query_selector(sel)
-                        if self._is_captcha_handle_visible(el):
-                            logging.info(f"已定位验证码控件：page={'登录主页' if pg == self._page else '新窗口/iframe'}，selector={sel}")
-                            return pg, el
-                    except Exception:
-                        continue
-        return None, None
-
-    def _query_across_frames(self, page, selectors):
-        """在 page 的所有 frame（含 iframe）中查找第一个可见元素。"""
-        if isinstance(selectors, str):
-            selectors = [selectors]
-        try:
-            frames = list(page.frames)
-        except Exception:
-            frames = []
-        for sel in selectors:
-            for frame in frames:
-                try:
-                    el = frame.query_selector(sel)
-                    if el and el.is_visible():
-                        return el
-                except Exception:
-                    continue
-        return None
-
-    def _click_confirm_in_captcha(self, page) -> bool:
-        """在验证码控件中点击确认按钮（跨 frame 查找）。"""
-        btn = self._query_across_frames(page, [
-            ".tencent-captcha-dy__verify-confirm-btn",
-            ".tencent-captcha-dy__confirm-btn",
-            "button:has-text('确定')",
-            "button:has-text('验证')",
-        ])
-        if btn is None:
-            logging.info("未找到显式确认按钮（文字顺序验证码可能在点满后自动提交）")
-            return False
-        try:
-            # 确认按钮初始可能 disabled，等待启用
-            for _ in range(10):
-                disabled = btn.get_attribute("disabled")
-                cls = btn.get_attribute("class") or ""
-                if disabled is None and "disabled" not in cls:
-                    break
-                time.sleep(0.3)
-            btn.click()
-            logging.info("已点击验证码确认按钮")
-            return True
-        except Exception as e:
-            logging.warning(f"点击确认按钮失败: {e}")
-            return False
-
-    def _click_refresh_in_captcha(self, page):
-        """在验证码控件中点击刷新按钮（跨 frame 查找）。"""
-        btn = self._query_across_frames(page, [
-            "#tCaptchaDyMainWrap > div:nth-child(3) > div:nth-child(2) > div:first-child > img",
-            ".tencent-captcha-dy__footer-icon--refresh",
-            "[class*='refresh']",
-        ])
-        if btn is not None:
-            try:
-                btn.click()
-                return
-            except Exception:
-                pass
-        # JS 兜底（仅在主 frame 内尝试）
-        try:
-            page.evaluate("""() => {
-                var els = document.querySelectorAll('[class*="refresh"]');
-                for (var i = 0; i < els.length; i++) {
-                    if (els[i].offsetParent !== null && els[i].getBoundingClientRect().width > 5) {
-                        els[i].click(); return;
-                    }
-                }
-            }""")
-        except Exception:
-            pass
-
-    @staticmethod
-    def _parse_text_captcha(text, img_w, img_h):
-        """解析 LLM 返回，提取 sequence 与 coords（统一为 0~1 比例坐标）。"""
-        seq, coords = [], []
-        try:
-            m = re.search(r'\{.*\}', text, re.DOTALL)
-            if m:
-                data = json.loads(m.group())
-                seq = data.get("sequence", []) or data.get("chars", []) or []
-                raw = data.get("coords", []) or []
-                for item in raw[:3]:
-                    if isinstance(item, (list, tuple)) and len(item) >= 2:
-                        coords.append((float(item[0]), float(item[1])))
-        except Exception:
-            pass
-        # 宽松正则兜底
-        if not coords:
-            for x, y in re.findall(r'\[\s*(\d+\.?\d*)\s*[,，]\s*(\d+\.?\d*)\s*\]', text):
-                coords.append((float(x), float(y)))
-        normalized = []
-        for (x, y) in coords[:3]:
-            if max(x, y) <= 1.5:
-                normalized.append((x, y))            # 已是比例坐标
-            elif img_w and img_h:
-                normalized.append((x / img_w, y / img_h))  # 像素坐标 → 比例
-            else:
-                logging.warning(f"坐标为像素值但缺少图片尺寸，放弃该点: ({x},{y})")
-                return seq, []
-        return seq, normalized
-
-    def _solve_text_sequence_captcha(self, page) -> bool:
-        """DEBUG_MODE 专用文字顺序验证码：截图 → LLM 返回比例坐标 → 点击。"""
-        from openai import OpenAI
-
-        api_key = os.getenv("LLM_API_KEY", "").strip()
-        if not api_key:
-            logging.error("LLM_API_KEY 未设置")
-            return False
-        client = OpenAI(
-            base_url=os.getenv("LLM_BASE_URL", "https://api.siliconflow.cn/v1").strip(),
-            api_key=api_key,
-        )
-        model = os.getenv("LLM_MODEL", "Qwen/Qwen3.5-35B-A3B").strip()
-        prompt = (
-            "中文文字顺序验证码。读提示→找候选汉字→按顺序返回比例坐标。"
-            '输出JSON：{"sequence":["字1","字2","字3"],"coords":[[x1,y1],[x2,y2],[x3,y3]]}'
-            "，x,y为0~1比例坐标。"
-        )
-
-        for attempt in range(self.RETRY_TIMES_LIMIT):
-            logging.info(f"[文字顺序验证码] 第 {attempt + 1}/{self.RETRY_TIMES_LIMIT} 次")
-            time.sleep(0.5)
-
-            cap_page, cap_el = self._locate_captcha_widget()
-            if cap_page is None or cap_el is None:
-                logging.warning("未检测到验证码控件")
-                continue
-
-            # 截图 + 获取尺寸
-            try:
-                img_bytes = cap_el.screenshot()
-                box = cap_el.bounding_box()
-                if not box or box["width"] < 10:
-                    continue
-                # 截图像素尺寸 ≈ 元素 CSS 尺寸 × deviceScaleFactor，直接用 box 宽高
-                img_w, img_h = box["width"], box["height"]
-            except Exception:
-                continue
-
-            # LLM 识别
-            try:
-                img_b64 = base64.b64encode(img_bytes).decode()
-                resp = client.chat.completions.create(
-                    model=model,
-                    messages=[{
-                        "role": "user",
-                        "content": [
-                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
-                            {"type": "text", "text": prompt},
-                        ],
-                    }],
-                    max_tokens=200,
-                    response_format={"type": "json_object"},
-                )
-                result_text = resp.choices[0].message.content or ""
-                logging.info(f"LLM: {result_text[:150]}")
-            except Exception as e:
-                logging.error(f"LLM 失败: {e}")
-                raise RuntimeError(f"LLM 调用失败: {e}") from e
-
-            sequence, coords = self._parse_text_captcha(result_text, img_w, img_h)
-            if len(coords) < 2:
-                logging.warning(f"坐标不足: {coords}")
-                self._click_refresh_in_captcha(cap_page)
-                continue
-
-            # 逐一点击
-            logging.info(f"点击顺序: {sequence}")
-            for i, (cx, cy) in enumerate(coords[:3]):
-                px, py = box["x"] + cx * box["width"], box["y"] + cy * box["height"]
-                try:
-                    cap_page.mouse.click(px, py)
-                    logging.info(f"点击#{i + 1}: ({px:.0f},{py:.0f})")
-                    self._random_delay(0.15, 0.3)
-                except Exception:
-                    break
-
-            self._click_confirm_in_captcha(cap_page)
-            time.sleep(1)
-
-            # 结果判定
-            if self._page.url != LOGIN_URL:
-                return True
-
-            # 检查是否有超时提示
-            timeout_hint = self._has_captcha_timeout(cap_page)
-            if timeout_hint:
-                logging.info("验证码超时，刷新后等待跳转...")
-                for _ in range(6):
-                    self._click_refresh_in_captcha(cap_page)
-                    time.sleep(3)
-                    if self._page.url != LOGIN_URL:
-                        return True
-                continue
-
-            # 验证码消失 → 通过
-            _, still = self._locate_captcha_widget()
-            if still is None:
-                time.sleep(0.5)
-                return True
-
-            self._click_refresh_in_captcha(cap_page)
-
-        return False
-
-    @staticmethod
-    def _has_captcha_timeout(page) -> bool:
-        """检测验证码是否提示超时。"""
-        try:
-            text = (page.text_content("body") or "").lower()
-            return any(kw in text for kw in ["超时", "timeout", "已过期", "expired"])
-        except Exception:
-            return False
-
-    # ── Cookie 持久化：避免频繁登录触发 RK001 ──
-
-#     def _save_cookies(self, page):
-#         """登录成功后保存 Cookie 到文件"""
-#         try:
-#             cookies = page.context.cookies()
-#             if not cookies:
-#                 logging.debug("没有 Cookie 可保存")
-#                 return False
-#             with open(_COOKIE_FILE, "w", encoding="utf-8") as f:
-#                 json.dump(cookies, f, ensure_ascii=False, indent=2)
-#             logging.info(f"已保存 {len(cookies)} 个 Cookie 到 {_COOKIE_FILE}")
-#             return True
-#         except Exception as e:
-#             logging.warning(f"保存 Cookie 失败: {e}")
-#             return False
-
-#     def _load_cookies(self, context):
-#         """从文件加载 Cookie 到浏览器上下文"""
-#         if not os.path.isfile(_COOKIE_FILE):
-#             logging.info("未找到 Cookie 文件，需要登录")
-#             return False
-#         try:
-#             with open(_COOKIE_FILE, "r", encoding="utf-8") as f:
-#                 cookies = json.load(f)
-#             if not cookies:
-#                 logging.info("Cookie 文件为空，需要登录")
-#                 return False
-#             # 过滤掉过期的 Cookie
-#             now = datetime.now().timestamp()
-#             valid_cookies = []
-#             for c in cookies:
-#                 # expires == -1 表示会话 Cookie，保留；否则检查是否过期
-#                 if c.get("expires", -1) == -1 or c.get("expires", 0) > now:
-#                     valid_cookies.append(c)
-#             if not valid_cookies:
-#                 logging.info("所有 Cookie 已过期，需要登录")
-#                 return False
-#             context.add_cookies(valid_cookies)
-#             logging.info(f"已加载 {len(valid_cookies)} 个 Cookie")
-#             return True
-#         except Exception as e:
-#             logging.warning(f"加载 Cookie 失败: {e}")
-#             return False
-
-#     def _validate_cookies(self, page) -> bool:
-#         """验证当前 Cookie 是否有效（能否访问需要登录的页面）"""
-#         try:
-#             logging.info("验证 Cookie 有效性...")
-#             page.goto(BALANCE_URL, wait_until="domcontentloaded",
-#                       timeout=self.DRIVER_IMPLICITY_WAIT_TIME * 2 * 1000)
-#             time.sleep(self.RETRY_WAIT_TIME_OFFSET_UNIT)
-
-#             # 检查是否被重定向到登录页
-#             if "login" in page.url.lower():
-#                 logging.info("Cookie 已失效，被重定向到登录页")
-#                 return False
-
-#             # 检查页面是否包含用户数据（说明已登录）
-#             has_user_data = page.evaluate("""() => {
-#                 // 检查是否有用户户号相关元素
-#                 var selectors = ['.el-dropdown', '[class*="user"]', '[class*="account"]'];
-#                 for (var i = 0; i < selectors.length; i++) {
-#                     var els = document.querySelectorAll(selectors[i]);
-#                     for (var j = 0; j < els.length; j++) {
-#                         if (els[j].offsetParent !== null && els[j].textContent.trim()) {
-#                             return true;
-#                         }
-#                     }
-#                 }
-#                 return false;
-#             }""")
-
-#             if has_user_data:
-#                 logging.info("Cookie 有效，已登录状态")
-#                 return True
-#             else:
-#                 logging.info("Cookie 无效，页面无用户数据")
-#                 return False
-#         except Exception as e:
-#             logging.warning(f"Cookie 验证异常: {e}")
-#             return False
-
 
     def fetch(self):
         try:
@@ -1496,7 +1151,8 @@ class DataFetcher:
 
         # ── 最近一日用电 ──
         if usage_info and usage_info.get("daily"):
-            daily_last = usage_info["daily"][-1]
+            daily_sorted = sorted(usage_info["daily"], key=lambda d: d.get("date", ""))
+            daily_last = daily_sorted[-1]
             last_daily_date = daily_last.get("date", "")
             last_daily_usage = daily_last.get("total_usage")
             logging.info(f"[{user_id}] 最近用电: {last_daily_date} {last_daily_usage} 度 (Vue)")
@@ -1547,14 +1203,13 @@ class DataFetcher:
         else:
             logging.info(f"[{user_id}] 未配置数据库, 跳过数据存储")
 
-        if month_charge:
-            month_charge = month_charge[-1]
+        # 按月排序取最新月（month 格式 "YYYY-MM" 可直接字符串比较）
+        if month and month_charge and month_usage:
+            sorted_triples = sorted(zip(month, month_usage, month_charge), key=lambda t: t[0])
+            _, month_usage, month_charge = sorted_triples[-1]
         else:
-            month_charge = None
-        if month_usage:
-            month_usage = month_usage[-1]
-        else:
-            month_usage = None
+            month_usage = month[-1] if month else None
+            month_charge = month[-1] if month else None
 
         return balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage, tou_data, enhanced_balance, bill_tou_data
 
@@ -2022,3 +1677,4 @@ if __name__ == "__main__":
         test1 = f.read()
         print(type(test1))
         print(test1)
+

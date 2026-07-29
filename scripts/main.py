@@ -40,7 +40,7 @@ def main():
         logging.info(f"读取环境变量 PHONE_NUMBER : {PHONE_NUMBER}")
         PASSWORD = os.getenv("PASSWORD")
         HASS_URL = os.getenv("HASS_URL")
-        JOB_START_TIME = os.getenv("JOB_START_TIME","07:00" )
+        JOB_START_TIME = os.getenv("JOB_START_TIME","07:00" ).strip('"').strip("'")
         LOG_LEVEL = os.getenv("LOG_LEVEL","INFO")
         VERSION = os.getenv("VERSION")
         RETRY_TIMES_LIMIT = int(os.getenv("RETRY_TIMES_LIMIT", 5))

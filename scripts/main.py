@@ -73,9 +73,9 @@ def main():
     schedule.every().day.at(parsed_time.strftime("%H:%M")).do(run_task, fetcher)
     schedule.every().day.at(next_run_time.strftime("%H:%M")).do(run_task, fetcher)
 
-    # 每5分钟重发一次数据，防止HA重启后数据丢失
-    # 如果缓存数据日期与当前日期不一致，则从国家电网重新获取数据
-    schedule.every(5).minutes.do(republish_or_fetch, updator, fetcher)
+    # 重发缓存到 HA 的间隔（分钟），默认 60 分钟，用于防止 HA 重启后数据丢失
+    CACHE_REPUBLISH_INTERVAL = int(os.getenv("CACHE_REPUBLISH_INTERVAL", "60"))
+    schedule.every(CACHE_REPUBLISH_INTERVAL).minutes.do(republish_or_fetch, updator, fetcher)
 
     # 启动时先尝试从缓存恢复
     # 如果缓存恢复成功，则跳过本次启动时的实时抓取，避免频繁重启导致账号被封

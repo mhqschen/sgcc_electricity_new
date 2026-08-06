@@ -84,18 +84,6 @@
 
 Cookie 自动持久化到 `data/sgcc_cookies.json`，下次启动时复用，避免频繁登录触发风控。数据获取优先使用页面 **Vue 状态注入**（一次性提取年度/月度/日分时数据），DOM 方式兜底。获取数据后通过 Home Assistant 的 [REST API](https://developers.home-assistant.io/docs/api/rest/) 将实体状态 POST 更新到 Home Assistant。
 
-## Cookie 持久化机制
-
-程序在浏览器登录成功后，会自动将会话 Cookie 保存到 `data/sgcc_cookies.json` 文件中。下次启动时优先加载已有 Cookie，如果 Cookie 仍然有效则直接复用，无需重新登录。
-
-**工作流程：**
-
-1. 首次运行 → 完整登录流程（账号密码 + 验证码）→ 登录成功 → `_save_cookies()` 保存 Cookie
-2. 后续运行 → `_load_cookies()` 加载 Cookie → `_validate_cookies()` 验证有效性 → 有效则跳过登录
-3. Cookie 过期或无效 → 重新走完整登录流程，覆盖旧 Cookie 文件
-
-> **注意：** 国网每天有登录次数限制，Cookie 持久化可有效避免频繁登录触发 RK001 风控。如遇到登录失败，删除 `data/sgcc_cookies.json` 后重试。
-
 # 安装与部署
 
 ## 0）获取大模型 API Key（必读）
@@ -104,13 +92,13 @@ Cookie 自动持久化到 `data/sgcc_cookies.json`，下次启动时复用，避
 
 ### 注册步骤
 
-> **🎁 推荐链接：https://cloud.siliconflow.cn/i/2JCjsjdB（邀请码 `2JCjsjdB`），点击注册即赠 2000 万 tokens！**
+> **🎁 推荐链接：https://cloud.siliconflow.cn/i/2JCjsjdB（邀请码 `2JCjsjdB`），点击注册即赠 16元代金券（充值一分钱后可使用）！**
 
 <p align="center">
 <img src="assets/share_sf-2JCjsjdB.png" alt="硅基流动注册二维码" width="250">
 </p>
 
-1. 注册 [硅基流动账号](https://cloud.siliconflow.cn/i/2JCjsjdB)：`https://cloud.siliconflow.cn/i/2JCjsjdB`（邀请码 `2JCjsjdB`），新用户赠 2000 万 tokens。
+1. 注册 [硅基流动账号](https://cloud.siliconflow.cn/i/2JCjsjdB)：`https://cloud.siliconflow.cn/i/2JCjsjdB`（邀请码 `2JCjsjdB`），新用户赠16元代金券（充值一分钱后可使用）。
 2. 在控制台创建 API Key。
 3. 配置到 `.env` 文件：
    ```bash
@@ -121,12 +109,12 @@ Cookie 自动持久化到 `data/sgcc_cookies.json`，下次启动时复用，避
 
 `Qwen3.5-35B-A3B` 输入仅 **¥0.0004 / K tokens**，每次验证码解算约 500 token，个人使用几乎免费。也可切换其他**多模态模型**：
 
-| 模型 | 输入价格 | 备注 |
-|------|---------|------|
-| `Qwen/Qwen3.5-35B-A3B` | ¥0.0004/K tokens | 推荐 |
-| `Qwen/Qwen2.5-VL-72B-Instruct` | ¥0.004/K tokens | 更准确 |
-| `gpt-4o` | ~¥0.015/K tokens | OpenAI |
-| `doubao-seed-2-0-pro` | ~¥0.004/K tokens | 火山引擎 |
+| 模型                             | 输入价格          | 备注     |
+| -------------------------------- | ----------------- | -------- |
+| `Qwen/Qwen3.5-35B-A3B`         | ¥0.0004/K tokens | 推荐     |
+| `Qwen/Qwen2.5-VL-72B-Instruct` | ¥0.004/K tokens  | 更准确   |
+| `gpt-4o`                       | ~¥0.015/K tokens | OpenAI   |
+| `doubao-seed-2-0-pro`          | ~¥0.004/K tokens | 火山引擎 |
 
 > **注意：DeepSeek 全系列（V3/V4/R1）均为纯文本模型，不支持图片识别，无法用于验证码解算。**
 
